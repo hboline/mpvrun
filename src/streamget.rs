@@ -167,6 +167,7 @@ pub mod stream {
         mode: Mode,
         mpvargs: Option<Vec<String>>,
         default_mpv_args: Option<Vec<String>>,
+        persistent: Option<Vec<String>>,
     }
 
     impl Stream {
@@ -199,6 +200,17 @@ pub mod stream {
                 None
             };
 
+            let persistent = if args.persistent {
+                Some(
+                    vec!["--ontop", "--keepaspect-window=yes"]
+                        .into_iter()
+                        .map(std::string::ToString::to_string)
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
             Ok(Stream {
                 id,
                 mode: if let Some(mode) = args.mode.mode {
@@ -212,6 +224,7 @@ pub mod stream {
                 },
                 mpvargs: args.mpvargs,
                 default_mpv_args,
+                persistent,
             })
         }
 
@@ -257,6 +270,7 @@ pub mod stream {
                     url = self.link();
                     arg_vec.append(self.default_mpv_args.clone().unwrap_or(Vec::new()).as_mut());
                     arg_vec.append(self.mpvargs.clone().unwrap_or(Vec::new()).as_mut());
+                    arg_vec.append(self.persistent.clone().unwrap_or(Vec::new()).as_mut());
                 }
                 Mode::Embed => {
                     url = self.embed();

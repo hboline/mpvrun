@@ -1,5 +1,3 @@
-use std::{path::PathBuf, process::Command};
-
 use clap::{Args, Parser, ValueEnum};
 use digest::StreamError;
 use stream::Stream;
@@ -65,20 +63,6 @@ pub struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
-
-    if args.persistent {
-        let path = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(_) => PathBuf::from("~"),
-        };
-
-        let mut components = path.components();
-        components.next_back();
-        let mut full_path = PathBuf::from_iter(components).into_os_string();
-        full_path.push("\\keepOnTop.py");
-
-        Command::new("python").args([full_path]).spawn()?;
-    }
 
     let stream = Stream::from(args);
     match stream {
