@@ -1,13 +1,16 @@
 use serde_json;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{stdin, stdout, Write};
 use std::num::ParseIntError;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 pub mod digest {
     use super::*;
 
     // compile output of command chain into one iterator
+    #[allow(unused)]
+    #[deprecated(note = "jq no longer needed")]
     fn zip_streams(input: Vec<u8>) -> Vec<(String, String)> {
         let input_string = String::from_utf8(input).expect("utf-8 parsing error");
         let titles = input_string.lines().skip(0).step_by(2);
@@ -27,20 +30,28 @@ pub mod digest {
     fn get_streams(channel: String) -> Vec<(String, String)> {
         let link = format!("https://www.youtube.com/@{channel}/streams");
 
-        let ytdlp_output = Command::new("yt-dlp")
-            .args([link.as_str(), "--flat-playlist", "-j"])
-            .stdout(Stdio::piped())
-            .spawn()
+        let ytdlp_output = String::from_utf8(
+            Command::new("yt-dlp")
+                .args([link.as_str(), "--flat-playlist", "-j"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        let json = serde_json::Deserializer::from_str(ytdlp_output.as_str())
+            .into_iter::<Value>()
+            .collect::<Result<Vec<Value>, _>>()
             .unwrap();
 
-        let jq_output = Command::new("jq")
-            .arg("select(.live_status == \"is_live\") | .title, .id")
-            .stdin(Stdio::from(ytdlp_output.stdout.unwrap()))
-            .output()
-            .unwrap()
-            .stdout;
-
-        zip_streams(jq_output)
+        json.into_iter()
+            .filter(|obj| obj["is_live"] == true)
+            .filter_map(|obj| {
+                let title = obj["title"].as_str().unwrap();
+                let id = obj["id"].as_str().unwrap();
+                Some((title.to_string(), id.to_string()))
+            })
+            .collect()
     }
 
     // choose stream (if more than 1) and return id
