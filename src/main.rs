@@ -44,7 +44,7 @@ pub struct Cli {
     #[command(flatten)]
     mode: ModeStruct,
 
-    /// Get all streams (uses yt-dlp & jq)
+    /// Get all streams (uses yt-dlp)
     #[arg(short, long)]
     all: bool,
 

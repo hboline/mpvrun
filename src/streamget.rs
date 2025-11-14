@@ -39,17 +39,15 @@ pub mod digest {
         )
         .unwrap();
 
-        let json = serde_json::Deserializer::from_str(ytdlp_output.as_str())
+        serde_json::Deserializer::from_str(ytdlp_output.as_str())
             .into_iter::<Value>()
-            .collect::<Result<Vec<Value>, _>>()
-            .unwrap();
-
-        json.into_iter()
-            .filter(|obj| obj["is_live"] == true)
+            .filter_map(Result::ok)
             .filter_map(|obj| {
-                let title = obj["title"].as_str().unwrap();
-                let id = obj["id"].as_str().unwrap();
-                Some((title.to_string(), id.to_string()))
+                (obj["is_live"] == true).then_some({
+                    let title = obj["title"].to_string().trim_matches('"').to_owned();
+                    let id = obj["id"].to_string().trim_matches('"').to_owned();
+                    (title, id)
+                })
             })
             .collect()
     }
