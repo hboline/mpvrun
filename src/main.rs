@@ -2,8 +2,9 @@ use clap::{Args, Parser, ValueEnum};
 use digest::StreamError;
 use stream::Stream;
 
-mod streamget;
-pub use crate::streamget::*;
+mod constants;
+mod digest;
+mod stream;
 
 // Specify how to open stream
 #[allow(dead_code)]
@@ -71,7 +72,9 @@ fn main() -> anyhow::Result<()> {
         Err(StreamError::NotLive(channel)) => {
             println!("Channel \"{}\" has no upcoming livestreams.", channel)
         }
-        Err(StreamError::Other) => println!("Unspecified stream input error encountered"),
+        Err(StreamError::Other(err)) => {
+            println!("Unspecified stream input error encountered:\n{}", err)
+        }
         Ok(stream) => stream.play()?,
     }
 
