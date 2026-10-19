@@ -13,7 +13,14 @@ fn get_streams(channel: String) -> Vec<(String, String)> {
 
     let ytdlp_output = String::from_utf8(
         Command::new("yt-dlp")
-            .args([link.as_str(), "--flat-playlist", "-j"])
+            .args([
+                link.as_str(),
+                "-j",
+                "--skip-download",
+                "--match-filter",
+                "live_status = is_live",
+                "--break-on-reject",
+            ])
             .output()
             .unwrap()
             .stdout,
@@ -23,12 +30,10 @@ fn get_streams(channel: String) -> Vec<(String, String)> {
     serde_json::Deserializer::from_str(ytdlp_output.as_str())
         .into_iter::<Value>()
         .filter_map(Result::ok)
-        .filter_map(|obj| {
-            (obj["is_live"] == true).then_some({
-                let title = obj["title"].to_string().trim_matches('"').to_owned();
-                let id = obj["id"].to_string().trim_matches('"').to_owned();
-                (title, id)
-            })
+        .map(|obj| {
+            let title = obj["title"].to_string().trim_matches('"').to_owned();
+            let id = obj["id"].to_string().trim_matches('"').to_owned();
+            (title, id)
         })
         .collect()
 }

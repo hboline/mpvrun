@@ -1,3 +1,4 @@
+use crate::browser::default_browser;
 use crate::digest::{get_all_streams, get_id, read_input, ReadOutput, StreamError};
 use crate::{Cli, Mode};
 use core::panic;
@@ -9,7 +10,7 @@ pub struct Stream {
     id: String,
     mode: Mode,
     mpvargs: Option<Vec<String>>,
-    default_mpv_args: Option<Vec<String>>,
+    mpv_options: Vec<String>,
     persistent: Option<Vec<String>>,
 }
 
@@ -29,20 +30,22 @@ impl Stream {
             }
         }?;
 
-        let default_mpv_args = if !args.debug {
-            Some(
-                vec![
-                    // "--ytdl-raw-options=downloader-args=\"http_persistent:0\"",
-                    "--ytdl-raw-options=extractor-args=youtube:player_client=default",
-                    "--msg-level=all=fatal,statusline=status",
-                ]
-                .into_iter()
-                .map(std::borrow::ToOwned::to_owned)
-                .collect(),
-            )
-        } else {
-            None
-        };
+        let mut mpv_options = Vec::new();
+        let mut ytdl_options = Vec::new();
+        if let Some(browser) = args.use_cookies {
+            let browser = browser.unwrap_or_else(|| default_browser().to_owned());
+            ytdl_options.push(format!("cookies-from-browser={browser}"));
+        }
+        if !args.debug {
+            ytdl_options.push("extractor-args=youtube:player_client=default".to_owned());
+        }
+        // Repeating --ytdl-raw-options replaces the earlier value, so combine the options.
+        if !ytdl_options.is_empty() {
+            mpv_options.push(format!("--ytdl-raw-options={}", ytdl_options.join(",")));
+        }
+        if !args.debug {
+            mpv_options.push("--msg-level=all=fatal,statusline=status".to_owned());
+        }
 
         let persistent = if args.persistent {
             Some(
@@ -67,7 +70,7 @@ impl Stream {
                 Mode::Mpv
             },
             mpvargs: args.mpvargs,
-            default_mpv_args,
+            mpv_options,
             persistent,
         })
     }
@@ -115,9 +118,7 @@ impl Stream {
         if self.mode == Mode::Mpv {
             let mut argvec: Vec<String> = vec!["/C".into(), "mpv".into(), url];
 
-            if let Some(v) = &mut self.default_mpv_args {
-                argvec.append(v);
-            }
+            argvec.append(&mut self.mpv_options);
 
             if let Some(v) = &mut self.mpvargs {
                 argvec.append(v);
@@ -133,5 +134,64 @@ impl Stream {
         };
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn stream_with(options: &[&str]) -> Stream {
+        let args = Cli::try_parse_from(
+            ["mpvrun", "https://www.youtube.com/watch?v=abcdefghijk"]
+                .into_iter()
+                .chain(options.iter().copied()),
+        )
+        .unwrap();
+        Stream::from(args).unwrap()
+    }
+
+    #[test]
+    fn cookies_preserve_the_existing_ytdlp_options() {
+        let stream = stream_with(&["--use-cookies", "chrome"]);
+        assert_eq!(
+            stream.mpv_options,
+            [
+                "--ytdl-raw-options=cookies-from-browser=chrome,extractor-args=youtube:player_client=default",
+                "--msg-level=all=fatal,statusline=status",
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_cookies_are_kept_in_debug_mode() {
+        let stream = stream_with(&["--debug", "-c", "edge", "--", "--volume=50"]);
+        assert_eq!(
+            stream.mpv_options,
+            ["--ytdl-raw-options=cookies-from-browser=edge"]
+        );
+        assert_eq!(stream.mpvargs.unwrap(), ["--volume=50"]);
+    }
+
+    #[test]
+    fn bare_cookie_flag_resolves_to_a_supported_browser() {
+        let stream = stream_with(&["--debug", "-c"]);
+        let browser = stream.mpv_options[0]
+            .strip_prefix("--ytdl-raw-options=cookies-from-browser=")
+            .unwrap();
+        assert!(crate::browser::SUPPORTED_BROWSERS.contains(&browser));
+    }
+
+    #[test]
+    fn no_cookie_flag_preserves_previous_options() {
+        assert_eq!(
+            stream_with(&[]).mpv_options,
+            [
+                "--ytdl-raw-options=extractor-args=youtube:player_client=default",
+                "--msg-level=all=fatal,statusline=status",
+            ]
+        );
+        assert!(stream_with(&["--debug"]).mpv_options.is_empty());
     }
 }

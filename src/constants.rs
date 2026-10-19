@@ -57,6 +57,10 @@ pub static CHANNEL_DICT: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
         ("koyori", "HakuiKoyori"),
         ("chloe", "SakamataChloe"),
         ("iroha", "kazamairoha"),
+        ("sopia", "SorashinaSopia"),
+        ("kyoko", "HyakutoKyoko"),
+        ("tsuzuri", "SuzunaTsuzuri"),
+        ("mela", "AchichiMela"),
         // Hololive ID
         ("risu", "AyundaRisu"),
         ("moona", "MoonaHoshinova"),
@@ -78,6 +82,8 @@ pub static CHANNEL_DICT: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
         ("su", "MizumiyaSu"),
         ("chihaya", "RindoChihaya"),
         ("vivi", "KikiraraVivi"),
+        // Other
+        ("mari", "MARIMARI_EN"),
         // Test streams (always live)
         ("test", "TokyoTones"),
     ])
