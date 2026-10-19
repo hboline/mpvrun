@@ -3,6 +3,7 @@ use digest::StreamError;
 use stream::Stream;
 
 mod browser;
+mod config;
 mod constants;
 mod digest;
 mod stream;
@@ -46,7 +47,7 @@ pub struct Cli {
     #[command(flatten)]
     mode: ModeStruct,
 
-    /// Get all streams (uses yt-dlp)
+    /// Choose a live or upcoming stream (upcoming streams open in the browser)
     #[arg(short, long)]
     all: bool,
 
@@ -58,13 +59,17 @@ pub struct Cli {
     #[arg(short, long, default_value_t = false)]
     persistent: bool,
 
-    /// Use browser cookies in mpv (omit browser to detect the system default, falling back to firefox)
+    /// Use browser cookies for discovery and playback
     ///
+    /// Omit BROWSER to use [yt-dlp].browser from ~/.config/mpvrun/config.toml,
+    /// then the system default browser, falling back to firefox.
+    /// Setting [yt-dlp].use-cookies = true enables cookies without this flag.
     /// Place a bare flag after the target, e.g. mpvrun TARGET -c.
     #[arg(
         short = 'c',
         long,
         value_name = "BROWSER",
+        ignore_case = true,
         num_args = 0..=1,
         value_parser = browser::SUPPORTED_BROWSERS
     )]
@@ -78,15 +83,19 @@ pub struct Cli {
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    let stream = Stream::from(args);
+    let config = config::Config::load()?;
+    let stream = Stream::from(args, &config);
     match stream {
-        Err(StreamError::NotYetLive(time)) => println!("Stream will be live in {}.", time),
-        Err(StreamError::NotFound) => println!("Stream not found!"),
         Err(StreamError::NotLive(channel)) => {
-            println!("Channel \"{}\" has no upcoming livestreams.", channel)
+            println!("No live streams found for \"{channel}\" in the first {} entries. Use -a to choose an upcoming stream.", digest::STREAM_LIMIT)
         }
+        Err(StreamError::NoStreams(channel)) => println!(
+            "No live or upcoming streams found for \"{channel}\" in the first {} entries.",
+            digest::STREAM_LIMIT
+        ),
+        Err(StreamError::Cancelled) => println!("Selection cancelled."),
         Err(StreamError::Other(err)) => {
-            println!("Unspecified stream input error encountered:\n{}", err)
+            anyhow::bail!(err)
         }
         Ok(stream) => stream.play()?,
     }
@@ -143,5 +152,14 @@ mod tests {
                 .unwrap();
             assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
         }
+    }
+
+    #[test]
+    fn browser_names_are_case_insensitive_on_the_cli() {
+        let args = Cli::try_parse_from(["mpvrun", "target", "-c", "FIREFOX"]).unwrap();
+        assert_eq!(
+            config::Config::default().cookie_browser(args.use_cookies.as_ref()),
+            Some("firefox".to_owned())
+        );
     }
 }

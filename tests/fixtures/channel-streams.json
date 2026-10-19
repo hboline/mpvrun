@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {"id": "rzxphuacYxo", "title": "Later upcoming", "live_status": "is_upcoming", "release_timestamp": 2000001000},
+    {"id": "iLxNEAxN8_U", "title": "Sooner upcoming", "live_status": "is_upcoming", "release_timestamp": 2000000000},
+    {"id": "qEe8JW9u7bU", "title": "Members \"live\" stream 日本語", "live_status": "is_live", "availability": "subscriber_only"},
+    {"id": "3pYMoZq0rqI", "title": "Archived members stream", "live_status": "was_live", "availability": "subscriber_only"},
+    {"id": "qEe8JW9u7bU", "title": "Duplicate live entry", "live_status": "is_live"},
+    {"id": "abcdefghijk", "title": "Regular video", "live_status": "not_live"},
+    {"id": "unknown1234", "title": "Unknown status", "live_status": null},
+    {"title": "Missing ID", "live_status": "is_live"},
+    null
+  ]
+}

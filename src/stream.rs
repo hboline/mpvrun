@@ -1,5 +1,5 @@
-use crate::browser::default_browser;
-use crate::digest::{get_all_streams, get_id, read_input, ReadOutput, StreamError};
+use crate::config::Config;
+use crate::digest::{discover, read_input, ReadOutput, StreamError};
 use crate::{Cli, Mode};
 use core::panic;
 use open;
@@ -15,25 +15,23 @@ pub struct Stream {
 }
 
 impl Stream {
-    pub fn from(args: Cli) -> Result<Self, StreamError> {
+    pub fn from(args: Cli, config: &Config) -> Result<Self, StreamError> {
+        // Resolve once before discovery and use the same browser for playback.
+        let cookie_browser = config.cookie_browser(args.use_cookies.as_ref());
         let input = read_input(args.target);
 
-        let id = match input {
+        let (id, upcoming) = match input {
             None => panic!("this shouldn't happen lol"),
-            Some(ReadOutput::Id(id)) => Ok(id),
+            Some(ReadOutput::Id(id)) => (id, false),
             Some(ReadOutput::Channel(channel)) => {
-                if args.all {
-                    Ok(get_all_streams(channel))
-                } else {
-                    get_id(channel)
-                }
+                let entry = discover(&channel, cookie_browser.as_deref(), args.all)?;
+                (entry.id, entry.upcoming)
             }
-        }?;
+        };
 
         let mut mpv_options = Vec::new();
         let mut ytdl_options = Vec::new();
-        if let Some(browser) = args.use_cookies {
-            let browser = browser.unwrap_or_else(|| default_browser().to_owned());
+        if let Some(browser) = cookie_browser {
             ytdl_options.push(format!("cookies-from-browser={browser}"));
         }
         if !args.debug {
@@ -60,7 +58,9 @@ impl Stream {
 
         Ok(Stream {
             id,
-            mode: if let Some(mode) = args.mode.mode {
+            mode: if upcoming {
+                Mode::Full
+            } else if let Some(mode) = args.mode.mode {
                 mode
             } else if args.mode.embed {
                 Mode::Embed
@@ -149,7 +149,7 @@ mod tests {
                 .chain(options.iter().copied()),
         )
         .unwrap();
-        Stream::from(args).unwrap()
+        Stream::from(args, &Config::default()).unwrap()
     }
 
     #[test]

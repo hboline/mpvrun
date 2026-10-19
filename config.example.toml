@@ -1,0 +1,12 @@
+# Save as ~/.config/mpvrun/config.toml on Windows, macOS, or Linux.
+[yt-dlp]
+# true enables cookies for both channel discovery and mpv playback without -c.
+use-cookies = false
+
+# Optional: used when cookies are enabled and -c has no explicit browser.
+# Omit to detect the system default browser (Firefox is the fallback).
+# Browser names are case-insensitive. A browser alone does not enable cookies.
+# browser = "firefox"
+
+# Supported: brave, chrome, chromium, edge, firefox, opera, safari, vivaldi, whale.
+# Explicit -c BROWSER overrides the browser above.

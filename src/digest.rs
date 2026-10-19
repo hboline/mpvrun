@@ -1,82 +1,184 @@
 use crate::constants::CHANNEL_DICT;
 use once_cell::sync::Lazy;
-use serde_json;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::io::{stdin, stdout, Write};
-use std::num::ParseIntError;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::io::{stdin, stdout, BufRead, Write};
 use std::process::Command;
 
-// get a vector of tuples with all valid live streams for channel
-fn get_streams(channel: String) -> Vec<(String, String)> {
-    let link = format!("https://www.youtube.com/@{channel}/streams");
+// Bound discovery so opening a stream never scans the entire channel archive.
+pub const STREAM_LIMIT: usize = 50;
 
-    let ytdlp_output = String::from_utf8(
-        Command::new("yt-dlp")
-            .args([
-                link.as_str(),
-                "-j",
-                "--skip-download",
-                "--match-filter",
-                "live_status = is_live",
-                "--break-on-reject",
-            ])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-
-    serde_json::Deserializer::from_str(ytdlp_output.as_str())
-        .into_iter::<Value>()
-        .filter_map(Result::ok)
-        .map(|obj| {
-            let title = obj["title"].to_string().trim_matches('"').to_owned();
-            let id = obj["id"].to_string().trim_matches('"').to_owned();
-            (title, id)
-        })
-        .collect()
+#[derive(Clone, Debug)]
+pub struct StreamEntry {
+    pub id: String,
+    pub upcoming: bool,
+    title: String,
+    members_only: bool,
+    release_timestamp: Option<i64>,
 }
 
-// choose stream (if more than 1) and return id
-fn select_stream(stream_list: Vec<(String, String)>) -> String {
-    if stream_list.len() == 1 {
-        return stream_list.get(0).unwrap().1.clone();
+impl fmt::Display for StreamEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = if self.upcoming { "UPCOMING" } else { "LIVE" };
+        let members = if self.members_only { " [MEMBERS]" } else { "" };
+        // Keep titles on one terminal line, even if the metadata contains controls.
+        let title: String = self
+            .title
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        write!(f, "[{status}]{members} {title}")
+    }
+}
+
+fn discovery_command(channel: &str, browser: Option<&str>) -> Command {
+    let mut command = Command::new("yt-dlp");
+    command.args([
+        "--ignore-config",
+        "--flat-playlist",
+        "--dump-single-json",
+        "--playlist-end",
+        &STREAM_LIMIT.to_string(),
+    ]);
+    if let Some(browser) = browser {
+        command.args(["--cookies-from-browser", browser]);
+    }
+    command.arg(format!("https://www.youtube.com/@{channel}/streams"));
+    command
+}
+
+fn get_streams(channel: &str, browser: Option<&str>) -> Result<Vec<StreamEntry>, StreamError> {
+    let output = discovery_command(channel, browser)
+        .output()
+        .map_err(|err| StreamError::Other(format!("Could not run yt-dlp: {err}")))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(StreamError::Other(format!(
+            "yt-dlp discovery failed ({}): {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+    if !stderr.trim().is_empty() {
+        eprint!("{stderr}");
+    }
+    parse_streams(&output.stdout)
+}
+
+fn parse_streams(json: &[u8]) -> Result<Vec<StreamEntry>, StreamError> {
+    let listing: Value = serde_json::from_slice(json)
+        .map_err(|err| StreamError::Other(format!("Invalid yt-dlp stream listing: {err}")))?;
+    let entries = listing["entries"]
+        .as_array()
+        .ok_or_else(|| StreamError::Other("yt-dlp returned no channel entries array".to_owned()))?;
+    let mut seen = HashSet::new();
+    let mut streams = Vec::new();
+    for entry in entries {
+        let upcoming = match entry["live_status"].as_str() {
+            Some("is_live") => false,
+            Some("is_upcoming") => true,
+            _ => continue,
+        };
+        let Some(id) = entry["id"].as_str().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            continue;
+        }
+        streams.push(StreamEntry {
+            id: id.to_owned(),
+            title: entry["title"].as_str().unwrap_or(id).to_owned(),
+            upcoming,
+            members_only: entry["availability"] == "subscriber_only",
+            release_timestamp: entry["release_timestamp"].as_i64(),
+        });
+    }
+    // Do not assume that YouTube places live streams before scheduled streams.
+    streams.sort_by_key(|stream| {
+        (
+            stream.upcoming,
+            stream.release_timestamp.unwrap_or(i64::MAX),
+        )
+    });
+    Ok(streams)
+}
+
+fn select_stream(
+    streams: Vec<StreamEntry>,
+    input: &mut impl BufRead,
+    output: &mut (impl anstream::stream::RawStream + anstream::stream::AsLockedWrite),
+) -> Result<StreamEntry, StreamError> {
+    if streams.is_empty() {
+        return Err(StreamError::Other("No streams to choose from".to_owned()));
+    }
+    // Adapt colors to the terminal, including Windows consoles and redirected output.
+    let mut output = anstream::AutoStream::auto(output);
+    writeln!(output, "Select a stream:")?;
+    for (i, stream) in streams.iter().enumerate() {
+        let mut label = if stream.upcoming {
+            format!("\x1b[90m{stream}\x1b[0m")
+        } else {
+            stream
+                .to_string()
+                .replacen("[LIVE]", "\x1b[31m[LIVE]\x1b[0m", 1)
+        };
+        if stream.members_only {
+            // Restore gray after the badge on upcoming streams; otherwise reset.
+            let restore = if stream.upcoming {
+                "\x1b[90m"
+            } else {
+                "\x1b[0m"
+            };
+            label = label.replacen("[MEMBERS]", &format!("\x1b[38;5;220m[MEMBERS]{restore}"), 1);
+        }
+        writeln!(output, "[{}] {label}", i + 1)?;
+    }
+    if streams.iter().any(|stream| stream.upcoming) {
+        writeln!(output)?;
     }
 
-    println!("--> Channel has multiple streams currently live");
-    for (i, (stream, _)) in stream_list.iter().enumerate() {
-        println!("[{}] {}", i + 1, stream);
-    }
-    print!("Select stream number: ");
-
-    let range = 1..=stream_list.len();
     let mut buffer = String::new();
-    let mut choice: Result<usize, ParseIntError>;
-
-    choice = loop {
-        stdout().flush().unwrap();
-        stdin().read_line(&mut buffer).unwrap();
-
-        choice = buffer.trim().parse::<usize>();
-
-        match choice {
-            Ok(value) if range.contains(&value) => break Ok(value),
-            _ => {
-                println!("Invalid selection. Please try again: ");
-                buffer.clear();
+    loop {
+        write!(output, "Stream number: ")?;
+        output.flush()?;
+        buffer.clear();
+        if input.read_line(&mut buffer)? == 0 {
+            return Err(StreamError::Cancelled);
+        }
+        if let Ok(number) = buffer.trim().parse::<usize>() {
+            if (1..=streams.len()).contains(&number) {
+                return Ok(streams.into_iter().nth(number - 1).unwrap());
             }
         }
-    };
-
-    let index = choice.unwrap().checked_sub(1).unwrap();
-
-    stream_list.get(index).unwrap().1.clone()
+        writeln!(
+            output,
+            "Invalid selection. Enter a number from 1 to {}.",
+            streams.len()
+        )?;
+    }
 }
 
-pub fn get_all_streams(channel: String) -> String {
-    let stream_list = get_streams(channel);
-    select_stream(stream_list)
+pub fn discover(
+    channel: &str,
+    browser: Option<&str>,
+    all: bool,
+) -> Result<StreamEntry, StreamError> {
+    let mut streams = get_streams(channel, browser)?;
+    if all {
+        if streams.is_empty() {
+            return Err(StreamError::NoStreams(channel.to_owned()));
+        }
+    } else {
+        streams.retain(|stream| !stream.upcoming);
+        if streams.is_empty() {
+            return Err(StreamError::NotLive(channel.to_owned()));
+        }
+        if streams.len() == 1 {
+            return Ok(streams.remove(0));
+        }
+    }
+    select_stream(streams, &mut stdin().lock(), &mut stdout().lock())
 }
 
 #[derive(Debug)]
@@ -114,33 +216,102 @@ pub fn read_input(input: String) -> Option<ReadOutput> {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum StreamError {
-    NotYetLive(String), // "This live event will begin in..."
-    NotFound,           // "Error 404: Not Found..."
-    NotLive(String),    // If channel has no live upcoming; also for mispelling
-    Other(String),      // Catch all for any other error
+    NotLive(String),
+    NoStreams(String),
+    Cancelled,
+    Other(String),
 }
 
-pub fn get_id(channel: String) -> Result<String, StreamError> {
-    let url = format!("https://www.youtube.com/@{}/live", channel);
+impl From<std::io::Error> for StreamError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Other(format!(
+            "Could not read or write the stream selection: {err}"
+        ))
+    }
+}
 
-    let output = Command::new("yt-dlp")
-        .args([url.as_str(), "-O", "id"])
-        .output();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
 
-    let output_stdout = String::from_utf8(output.as_ref().unwrap().stdout.clone()).unwrap();
-    let output_stderr = String::from_utf8(output.as_ref().unwrap().stderr.clone()).unwrap();
+    const LISTING: &[u8] = include_bytes!("../tests/fixtures/channel-streams.json");
 
-    const LIVE_BEGIN: &str = "live event will begin in ";
-    match output_stderr.as_str() {
-        s if s.contains(LIVE_BEGIN) => {
-            let start = s.find(LIVE_BEGIN).unwrap() + LIVE_BEGIN.len();
-            let time = s[start..s.trim().len() - 1].to_string();
-            Err(StreamError::NotYetLive(time))
+    #[test]
+    fn lists_members_live_after_upcoming_without_extracting_each_video() {
+        let streams = parse_streams(LISTING).unwrap();
+        let ids: Vec<_> = streams.iter().map(|stream| stream.id.as_str()).collect();
+        assert_eq!(ids, ["qEe8JW9u7bU", "iLxNEAxN8_U", "rzxphuacYxo"]);
+        assert_eq!(
+            streams[0].to_string(),
+            "[LIVE] [MEMBERS] Members \"live\" stream 日本語"
+        );
+        assert!(streams[1].to_string().starts_with("[UPCOMING]"));
+    }
+
+    #[test]
+    fn empty_listings_are_distinct_from_invalid_output() {
+        assert!(parse_streams(br#"{"entries": []}"#).unwrap().is_empty());
+        assert!(
+            parse_streams(br#"{"entries": [{"id": "old", "live_status": "was_live"}]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        for json in [b"not json".as_slice(), b"{}", br#"{"entries": null}"#] {
+            assert!(matches!(parse_streams(json), Err(StreamError::Other(_))));
         }
-        s if s.contains("Error 404: Not Found") => Err(StreamError::NotFound),
-        s if s.contains("channel is not currently live") => Err(StreamError::NotLive(channel)),
-        _ => Ok(output_stdout.trim().to_string()),
+    }
+
+    #[test]
+    fn picker_retries_bad_input_and_can_select_upcoming() {
+        let mut input = Cursor::new(b"0\n999\ninvalid\nq\nQ\n2\n");
+        let mut output = Vec::new();
+        let selected =
+            select_stream(parse_streams(LISTING).unwrap(), &mut input, &mut output).unwrap();
+        assert_eq!(selected.id, "iLxNEAxN8_U");
+        assert!(selected.upcoming);
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("Invalid selection.").count(), 5);
+        assert!(output.contains("[LIVE] [MEMBERS]"));
+    }
+
+    #[test]
+    fn picker_cancels_on_eof_and_never_prompts_for_an_empty_list() {
+        for input in ["", "invalid\n"] {
+            let result = select_stream(
+                parse_streams(LISTING).unwrap(),
+                &mut Cursor::new(input),
+                &mut Vec::new(),
+            );
+            assert!(matches!(result, Err(StreamError::Cancelled)));
+        }
+        let mut output = Vec::new();
+        assert!(select_stream(vec![], &mut Cursor::new(""), &mut output).is_err());
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn discovery_passes_cookies_and_does_not_filter_before_listing() {
+        for browser in [None, Some("firefox"), Some("edge")] {
+            let command = discovery_command("holoen_gigimurin", browser);
+            let args: Vec<_> = command.get_args().map(|s| s.to_str().unwrap()).collect();
+            assert!(args.contains(&"--flat-playlist"));
+            assert!(args.contains(&"--dump-single-json"));
+            assert!(args.contains(&"--ignore-config"));
+            assert!(!args.contains(&"--match-filter"));
+            assert!(!args.contains(&"--break-on-reject"));
+            assert_eq!(
+                args.last(),
+                Some(&"https://www.youtube.com/@holoen_gigimurin/streams")
+            );
+            if let Some(browser) = browser {
+                assert!(args
+                    .windows(2)
+                    .any(|pair| pair == ["--cookies-from-browser", browser]));
+            } else {
+                assert!(!args.contains(&"--cookies-from-browser"));
+            }
+        }
     }
 }
