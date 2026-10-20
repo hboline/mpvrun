@@ -116,7 +116,9 @@ impl Stream {
         };
 
         if self.mode == Mode::Mpv {
-            let mut argvec: Vec<String> = vec!["/C".into(), "mpv".into(), url];
+            // Invoke mpv directly instead of going through a platform-specific
+            // shell (`cmd /C` only exists on Windows).
+            let mut argvec: Vec<String> = vec![url];
 
             argvec.append(&mut self.mpv_options);
 
@@ -128,7 +130,7 @@ impl Stream {
                 argvec.append(v);
             }
 
-            Command::new("cmd").args(argvec).spawn()?;
+            Command::new("mpv").args(argvec).spawn()?;
         } else {
             open::that(url)?;
         };
