@@ -148,6 +148,19 @@ impl Stream {
                 }
                 child.wait()?;
                 result?;
+            } else if cfg!(windows) {
+                // The Windows console launcher attaches mpv to the terminal
+                // and waits for playback to finish.
+                Command::new("mpv.com")
+                    .args(&argvec)
+                    .status()
+                    .or_else(|err| {
+                        if err.kind() == io::ErrorKind::NotFound {
+                            Command::new("mpv").args(argvec).status()
+                        } else {
+                            Err(err)
+                        }
+                    })?;
             } else {
                 Command::new("mpv").args(argvec).status()?;
             }
