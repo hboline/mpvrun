@@ -84,6 +84,7 @@ pub static CHANNEL_DICT: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
         ("vivi", "KikiraraVivi"),
         // Other
         ("mari", "MARIMARI_EN"),
+        ("mint", "mintfantome"),
         // Test streams (always live)
         ("test", "TokyoTones"),
     ])
